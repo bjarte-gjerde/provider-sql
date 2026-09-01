@@ -23,6 +23,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/lib/pq"
 	_ "github.com/microsoft/go-mssqldb"
+	_ "github.com/microsoft/go-mssqldb/azuread"
 
 	"github.com/alecthomas/kingpin/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
