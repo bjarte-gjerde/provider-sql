@@ -308,6 +308,11 @@ func (in *GrantParameters) DeepCopyInto(out *GrantParameters) {
 		*out = make(GrantPermissions, len(*in))
 		copy(*out, *in)
 	}
+	if in.Role != nil {
+		in, out := &in.Role, &out.Role
+		*out = new(DatabaseRole)
+		**out = **in
+	}
 	if in.Schema != nil {
 		in, out := &in.Schema, &out.Schema
 		*out = new(string)

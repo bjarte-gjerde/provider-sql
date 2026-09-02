@@ -26,6 +26,7 @@ import (
 	_ "github.com/microsoft/go-mssqldb/azuread"
 
 	"github.com/alecthomas/kingpin/v2"
+	"github.com/go-logr/logr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -58,12 +59,14 @@ func main() {
 
 	zl := zap.New(zap.UseDevMode(*debug))
 	log := logging.NewLogrLogger(zl.WithName("provider-sql"))
+	controllerRuntimeLog := logr.Discard()
 	if *debug {
 		// The controller-runtime runs with a no-op logger by default. It is
 		// *very* verbose even at info level, so we only provide it a real
 		// logger when we're running in debug mode.
-		ctrl.SetLogger(zl)
+		controllerRuntimeLog = zl
 	}
+	ctrl.SetLogger(controllerRuntimeLog)
 
 	log.Debug("Starting", "sync-period", syncPeriod.String())
 
