@@ -15,6 +15,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+const defaultAzurePostgreSQLTokenScope = "https://ossrdbms-aad.database.windows.net/.default"
+
 type ProviderInfo struct {
 	ProviderConfigName string
 	SecretData         map[string][]byte
@@ -28,6 +30,8 @@ func GetProviderConfig(ctx context.Context, kube client.Client, mg resource.Mode
 		defaultDatabase string
 		sslMode         *string
 		keyMapping      map[string]string
+		authMode        = xsql.AuthenticationModePassword
+		tokenScope      string
 	)
 
 	switch mg.GetProviderConfigReference().Kind {
@@ -51,6 +55,13 @@ func GetProviderConfig(ctx context.Context, kube client.Client, mg resource.Mode
 		defaultDatabase = providerConfig.Spec.DefaultDatabase
 		sslMode = providerConfig.Spec.SSLMode
 		keyMapping = providerConfig.Spec.Credentials.SecretKeyMapping.ToMap()
+		if providerConfig.Spec.Credentials.Source == v1alpha1.CredentialsSourceAzureWorkloadIdentity {
+			authMode = xsql.AuthenticationModeAzureWorkloadIdentity
+			tokenScope = defaultAzurePostgreSQLTokenScope
+			if providerConfig.Spec.Credentials.AzureWorkloadIdentity != nil && providerConfig.Spec.Credentials.AzureWorkloadIdentity.TokenScope != "" {
+				tokenScope = providerConfig.Spec.Credentials.AzureWorkloadIdentity.TokenScope
+			}
+		}
 	case v1alpha1.ClusterProviderConfigKind:
 		clusterProviderConfig := &v1alpha1.ClusterProviderConfig{
 			ObjectMeta: metav1.ObjectMeta{
@@ -70,6 +81,13 @@ func GetProviderConfig(ctx context.Context, kube client.Client, mg resource.Mode
 		defaultDatabase = clusterProviderConfig.Spec.DefaultDatabase
 		sslMode = clusterProviderConfig.Spec.SSLMode
 		keyMapping = clusterProviderConfig.Spec.Credentials.SecretKeyMapping.ToMap()
+		if clusterProviderConfig.Spec.Credentials.Source == v1alpha1.CredentialsSourceAzureWorkloadIdentity {
+			authMode = xsql.AuthenticationModeAzureWorkloadIdentity
+			tokenScope = defaultAzurePostgreSQLTokenScope
+			if clusterProviderConfig.Spec.Credentials.AzureWorkloadIdentity != nil && clusterProviderConfig.Spec.Credentials.AzureWorkloadIdentity.TokenScope != "" {
+				tokenScope = clusterProviderConfig.Spec.Credentials.AzureWorkloadIdentity.TokenScope
+			}
+		}
 	default:
 		return ProviderInfo{}, provErrors.InvalidProviderConfigKindError(mg.GetProviderConfigReference().Kind)
 	}
@@ -86,7 +104,7 @@ func GetProviderConfig(ctx context.Context, kube client.Client, mg resource.Mode
 
 	return ProviderInfo{
 		ProviderConfigName: mg.GetProviderConfigReference().Name,
-		SecretData:         xsql.RemapCredentialKeys(s.Data, keyMapping),
+		SecretData:         xsql.WithAuthentication(xsql.RemapCredentialKeys(s.Data, keyMapping), authMode, tokenScope),
 		DefaultDatabase:    defaultDatabase,
 		SSLMode:            sslMode,
 	}, nil

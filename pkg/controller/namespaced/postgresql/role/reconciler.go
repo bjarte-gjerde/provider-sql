@@ -52,6 +52,8 @@ const (
 	errTrackPCUsage = "cannot track ProviderConfig usage"
 
 	errSelectRole                = "cannot select role"
+	errEntraPrincipalMismatch    = "PostgreSQL role %s exists but is not mapped to Entra object %s with type %s"
+	errEntraPrincipalAdmin       = "PostgreSQL role %s is unexpectedly an Entra administrator"
 	errCreateRole                = "cannot create role"
 	errDropRole                  = "cannot drop role"
 	errUpdateRole                = "cannot update role"
@@ -232,6 +234,28 @@ func (c *external) Observe(ctx context.Context, mg *namespacedv1alpha1.Role) (ma
 	if err != nil {
 		return managed.ExternalObservation{}, errors.Wrap(err, errSelectRole)
 	}
+	if mg.Spec.ForProvider.AzureEntra != nil {
+		var principalType string
+		var objectID string
+		var isAdmin bool
+		err := c.db.Scan(ctx, xsql.Query{
+			String:     "SELECT principaltype, objectid, isadmin FROM pg_catalog.pgaadauth_list_principals(false) WHERE rolname = $1",
+			Parameters: []interface{}{meta.GetExternalName(mg)},
+		}, &principalType, &objectID, &isAdmin)
+		expectedType := azureEntraPostgreSQLPrincipalType(mg.Spec.ForProvider.AzureEntra.PrincipalType)
+		if xsql.IsNoRows(err) {
+			return managed.ExternalObservation{}, errors.Errorf(errEntraPrincipalMismatch, meta.GetExternalName(mg), mg.Spec.ForProvider.AzureEntra.ObjectID, expectedType)
+		}
+		if err != nil {
+			return managed.ExternalObservation{}, errors.Wrap(err, errSelectRole)
+		}
+		if principalType != expectedType || !strings.EqualFold(objectID, mg.Spec.ForProvider.AzureEntra.ObjectID) {
+			return managed.ExternalObservation{}, errors.Errorf(errEntraPrincipalMismatch, meta.GetExternalName(mg), mg.Spec.ForProvider.AzureEntra.ObjectID, expectedType)
+		}
+		if isAdmin {
+			return managed.ExternalObservation{}, errors.Errorf(errEntraPrincipalAdmin, meta.GetExternalName(mg))
+		}
+	}
 	if len(rolconfigs) > 0 {
 		var rc []namespacedv1alpha1.RoleConfigurationParameter
 		for _, c := range rolconfigs {
@@ -245,9 +269,13 @@ func (c *external) Observe(ctx context.Context, mg *namespacedv1alpha1.Role) (ma
 	}
 	mg.Status.AtProvider.ConfigurationParameters = observed.ConfigurationParameters
 
-	_, pwdChanged, err := c.getPassword(ctx, mg)
-	if err != nil {
-		return managed.ExternalObservation{}, err
+	pwdChanged := false
+	if mg.Spec.ForProvider.AzureEntra == nil {
+		_, varPwdChanged, err := c.getPassword(ctx, mg)
+		if err != nil {
+			return managed.ExternalObservation{}, err
+		}
+		pwdChanged = varPwdChanged
 	}
 
 	mg.SetConditions(xpv1.Available())
@@ -268,29 +296,50 @@ func (c *external) Create(ctx context.Context, mg *namespacedv1alpha1.Role) (man
 	crn := pq.QuoteIdentifier(meta.GetExternalName(mg))
 	privs := privilegesToClauses(mg.Spec.ForProvider.Privileges)
 
-	pw, _, err := c.getPassword(ctx, mg)
-	if err != nil {
-		return managed.ExternalCreation{}, err
-	}
-
-	if pw == "" {
-		pw, err = password.Generate()
+	pw := ""
+	if mg.Spec.ForProvider.AzureEntra != nil {
+		if err := c.db.Exec(ctx, xsql.Query{
+			String: "SELECT pg_catalog.pgaadauth_create_principal_with_oid($1, $2, $3, false, false)",
+			Parameters: []interface{}{
+				meta.GetExternalName(mg),
+				mg.Spec.ForProvider.AzureEntra.ObjectID,
+				azureEntraPostgreSQLPrincipalType(mg.Spec.ForProvider.AzureEntra.PrincipalType),
+			},
+		}); err != nil {
+			return managed.ExternalCreation{}, errors.Wrap(err, errCreateRole)
+		}
+		if len(privs) > 0 {
+			if err := c.db.Exec(ctx, xsql.Query{
+				String: fmt.Sprintf("ALTER ROLE %s %s", crn, strings.Join(privs, " ")),
+			}); err != nil {
+				return managed.ExternalCreation{}, errors.Wrap(err, errCreateRole)
+			}
+		}
+	} else {
+		var err error
+		pw, _, err = c.getPassword(ctx, mg)
 		if err != nil {
 			return managed.ExternalCreation{}, err
 		}
-	}
+		if pw == "" {
+			pw, err = password.Generate()
+			if err != nil {
+				return managed.ExternalCreation{}, err
+			}
+		}
 
-	// NOTE we're not using pq's "Parameters" setting here
-	// because it does not allow us to pass identifiers.
-	if err := c.db.Exec(ctx, xsql.Query{
-		String: fmt.Sprintf(
-			"CREATE ROLE %s PASSWORD %s %s",
-			crn,
-			pq.QuoteLiteral(pw),
-			strings.Join(privs, " "),
-		),
-	}); err != nil {
-		return managed.ExternalCreation{}, errors.Wrap(err, errCreateRole)
+		// NOTE we're not using pq's "Parameters" setting here
+		// because it does not allow us to pass identifiers.
+		if err := c.db.Exec(ctx, xsql.Query{
+			String: fmt.Sprintf(
+				"CREATE ROLE %s PASSWORD %s %s",
+				crn,
+				pq.QuoteLiteral(pw),
+				strings.Join(privs, " "),
+			),
+		}); err != nil {
+			return managed.ExternalCreation{}, errors.Wrap(err, errCreateRole)
+		}
 	}
 
 	// PrivilegesAsClauses is used as role status output
@@ -319,9 +368,14 @@ func (c *external) Update(ctx context.Context, mg *namespacedv1alpha1.Role) (man
 	// are added. Think about splitting this method up if new functionality
 	// is desired.
 
-	pw, pwchanged, err := c.getPassword(ctx, mg)
-	if err != nil {
-		return managed.ExternalUpdate{}, err
+	pw := ""
+	pwchanged := false
+	var err error
+	if mg.Spec.ForProvider.AzureEntra == nil {
+		pw, pwchanged, err = c.getPassword(ctx, mg)
+		if err != nil {
+			return managed.ExternalUpdate{}, err
+		}
 	}
 
 	crn := pq.QuoteIdentifier(meta.GetExternalName(mg))
@@ -417,28 +471,28 @@ func (c *external) Delete(ctx context.Context, mg *namespacedv1alpha1.Role) (man
 }
 
 func upToDate(observed *namespacedv1alpha1.RoleParameters, desired *namespacedv1alpha1.RoleParameters) bool {
-	if observed.ConnectionLimit != desired.ConnectionLimit {
+	if !cmp.Equal(observed.ConnectionLimit, desired.ConnectionLimit) {
 		return false
 	}
-	if observed.Privileges.SuperUser != desired.Privileges.SuperUser {
+	if !cmp.Equal(observed.Privileges.SuperUser, desired.Privileges.SuperUser) {
 		return false
 	}
-	if observed.Privileges.Inherit != desired.Privileges.Inherit {
+	if !cmp.Equal(observed.Privileges.Inherit, desired.Privileges.Inherit) {
 		return false
 	}
-	if observed.Privileges.CreateDb != desired.Privileges.CreateDb {
+	if !cmp.Equal(observed.Privileges.CreateDb, desired.Privileges.CreateDb) {
 		return false
 	}
-	if observed.Privileges.CreateRole != desired.Privileges.CreateRole {
+	if !cmp.Equal(observed.Privileges.CreateRole, desired.Privileges.CreateRole) {
 		return false
 	}
-	if observed.Privileges.Login != desired.Privileges.Login {
+	if !cmp.Equal(observed.Privileges.Login, desired.Privileges.Login) {
 		return false
 	}
-	if observed.Privileges.Replication != desired.Privileges.Replication {
+	if !cmp.Equal(observed.Privileges.Replication, desired.Privileges.Replication) {
 		return false
 	}
-	if observed.Privileges.BypassRls != desired.Privileges.BypassRls {
+	if !cmp.Equal(observed.Privileges.BypassRls, desired.Privileges.BypassRls) {
 		return false
 	}
 	if !cmp.Equal(observed.ConfigurationParameters, desired.ConfigurationParameters,
@@ -489,4 +543,15 @@ func lateInit(observed *namespacedv1alpha1.RoleParameters, desired *namespacedv1
 
 func (c *external) Disconnect(ctx context.Context) error {
 	return nil
+}
+
+func azureEntraPostgreSQLPrincipalType(principalType namespacedv1alpha1.AzureEntraPrincipalType) string {
+	switch principalType {
+	case namespacedv1alpha1.AzureEntraPrincipalTypeUser:
+		return "user"
+	case namespacedv1alpha1.AzureEntraPrincipalTypeGroup:
+		return "group"
+	default:
+		return "service"
+	}
 }

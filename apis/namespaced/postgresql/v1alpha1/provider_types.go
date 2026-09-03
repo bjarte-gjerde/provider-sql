@@ -46,24 +46,45 @@ const (
 	// should acquire credentials from a connection secret written by a managed
 	// resource that represents a PostgreSQL server.
 	CredentialsSourcePostgreSQLConnectionSecret PostgreSQLConnectionSource = "PostgreSQLConnectionSecret"
+	// CredentialsSourceAzureWorkloadIdentity indicates that the provider should
+	// authenticate to Azure Database for PostgreSQL with the workload identity
+	// assigned to the provider pod.
+	CredentialsSourceAzureWorkloadIdentity PostgreSQLConnectionSource = "AzureWorkloadIdentity"
 )
 
 // ProviderCredentials required to authenticate.
 type ProviderCredentials struct {
 	// Source of the provider credentials.
-	// +kubebuilder:validation:Enum=PostgreSQLConnectionSecret
+	// +kubebuilder:validation:Enum=PostgreSQLConnectionSecret;AzureWorkloadIdentity
 	Source PostgreSQLConnectionSource `json:"source"`
 
 	// A CredentialsSecretRef is a reference to a PostgreSQL connection secret
-	// that contains the credentials that must be used to connect to the
-	// provider. +optional
+	// that contains the connection metadata used to connect to the provider.
+	// Password authentication requires username and password. Azure workload
+	// identity authentication requires endpoint, port, and the Entra admin role
+	// name as username. +optional
 	ConnectionSecretRef xpv1.LocalSecretReference `json:"connectionSecretRef,omitempty"`
+
+	// AzureWorkloadIdentity configures Microsoft Entra token authentication.
+	// It is used only when source is AzureWorkloadIdentity.
+	// +optional
+	AzureWorkloadIdentity *AzureWorkloadIdentityCredentials `json:"azureWorkloadIdentity,omitempty"`
 
 	// SecretKeyMapping allows overriding the default secret key names used
 	// to read credentials from the connection secret. When not specified,
 	// standard Crossplane keys are used: "endpoint", "port", "username", "password".
 	// +optional
 	SecretKeyMapping *SecretKeyMapping `json:"secretKeyMapping,omitempty"`
+}
+
+// AzureWorkloadIdentityCredentials configures token acquisition for Azure
+// Database for PostgreSQL.
+type AzureWorkloadIdentityCredentials struct {
+	// TokenScope is the Microsoft Entra scope requested for PostgreSQL. Override
+	// this for sovereign clouds when their OSS RDBMS audience differs.
+	// +kubebuilder:default="https://ossrdbms-aad.database.windows.net/.default"
+	// +optional
+	TokenScope string `json:"tokenScope,omitempty"`
 }
 
 // SecretKeyMapping allows overriding the default secret key names used to

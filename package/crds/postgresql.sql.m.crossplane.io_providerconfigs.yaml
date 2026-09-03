@@ -54,11 +54,25 @@ spec:
               credentials:
                 description: Credentials required to authenticate to this provider.
                 properties:
+                  azureWorkloadIdentity:
+                    description: |-
+                      AzureWorkloadIdentity configures Microsoft Entra token authentication.
+                      It is used only when source is AzureWorkloadIdentity.
+                    properties:
+                      tokenScope:
+                        default: https://ossrdbms-aad.database.windows.net/.default
+                        description: |-
+                          TokenScope is the Microsoft Entra scope requested for PostgreSQL. Override
+                          this for sovereign clouds when their OSS RDBMS audience differs.
+                        type: string
+                    type: object
                   connectionSecretRef:
                     description: |-
                       A CredentialsSecretRef is a reference to a PostgreSQL connection secret
-                      that contains the credentials that must be used to connect to the
-                      provider. +optional
+                      that contains the connection metadata used to connect to the provider.
+                      Password authentication requires username and password. Azure workload
+                      identity authentication requires endpoint, port, and the Entra admin role
+                      name as username. +optional
                     properties:
                       name:
                         description: Name of the secret.
@@ -93,6 +107,7 @@ spec:
                     description: Source of the provider credentials.
                     enum:
                     - PostgreSQLConnectionSecret
+                    - AzureWorkloadIdentity
                     type: string
                 required:
                 - source
