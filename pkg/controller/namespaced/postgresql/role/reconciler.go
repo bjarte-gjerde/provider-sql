@@ -239,7 +239,7 @@ func (c *external) Observe(ctx context.Context, mg *namespacedv1alpha1.Role) (ma
 		var objectID string
 		var isAdmin bool
 		err := c.db.Scan(ctx, xsql.Query{
-			String:     "SELECT principaltype, objectid, isadmin FROM pg_catalog.pgaadauth_list_principals(false) WHERE rolename = $1",
+			String:     "SELECT principaltype, objectid, isadmin FROM pg_catalog.pgaadauth_list_principals(false) WHERE rolname = $1",
 			Parameters: []interface{}{meta.GetExternalName(mg)},
 		}, &principalType, &objectID, &isAdmin)
 		expectedType := azureEntraPostgreSQLPrincipalType(mg.Spec.ForProvider.AzureEntra.PrincipalType)

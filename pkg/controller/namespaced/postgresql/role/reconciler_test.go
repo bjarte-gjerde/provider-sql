@@ -342,7 +342,7 @@ func TestObserve(t *testing.T) {
 			fields: fields{
 				db: mockDB{
 					MockScan: func(_ context.Context, q xsql.Query, dest ...interface{}) error {
-						if q.String == "SELECT principaltype, objectid, isadmin FROM pg_catalog.pgaadauth_list_principals(false) WHERE rolename = $1" {
+						if q.String == "SELECT principaltype, objectid, isadmin FROM pg_catalog.pgaadauth_list_principals(false) WHERE rolname = $1" {
 							*dest[0].(*string) = "service"
 							*dest[1].(*string) = "00000000-0000-0000-0000-000000000001"
 							*dest[2].(*bool) = true
